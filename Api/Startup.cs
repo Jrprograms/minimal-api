@@ -45,6 +45,7 @@ public class Startup
 
         services.AddScoped<IAdministradorServico, AdministradorServico>();
         services.AddScoped<IVeiculoServico, VeiculoServico>();
+        services.AddScoped<IAvaliacaoVeiculoServico, AvaliacaoVeiculoServico>();
 
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen(options => {
@@ -103,7 +104,135 @@ public class Startup
 
         app.UseCors();
 
-        app.UseEndpoints(endpoints => {
+            app.UseEndpoints(endpoints => {
+                // Endpoints de Avaliação
+                endpoints.MapPost("/veiculos/{veiculoId}/avaliacoes", async (
+                    [FromRoute] int veiculoId,
+                    [FromBody] AvaliacaoVeiculoDTO avaliacaoDTO,
+                    [FromServices] IAvaliacaoVeiculoServico avaliacaoServico,
+                    [FromServices] ILogger<Startup> logger,
+                    ClaimsPrincipal user) =>
+                {
+                    try
+                    {
+                        if (avaliacaoDTO == null)
+                        {
+                            logger.LogError("AvaliacaoDTO é nulo");
+                            return Results.BadRequest(new { message = "Dados da avaliação não fornecidos" });
+                        }
+
+                        logger.LogInformation($"Dados recebidos: VeiculoId={veiculoId}, Estrelas={avaliacaoDTO.Estrelas}, Comentario={avaliacaoDTO.Comentario}");
+                        logger.LogInformation($"Iniciando adição de avaliação para veículo {veiculoId}");
+                        
+                        // Verificar se o veículo existe
+                        var veiculoExists = await avaliacaoServico.VerificarVeiculoExiste(veiculoId);
+                        if (!veiculoExists)
+                        {
+                            logger.LogWarning($"Veículo {veiculoId} não encontrado");
+                            return Results.NotFound(new { message = "Veículo não encontrado" });
+                        }
+
+                        var nameIdentifierClaim = user.FindFirst(ClaimTypes.NameIdentifier);
+                        if (nameIdentifierClaim == null)
+                        {
+                            logger.LogError("NameIdentifier claim não encontrada no token");
+                            return Results.Unauthorized();
+                        }
+
+                        if (!int.TryParse(nameIdentifierClaim.Value, out int adminId))
+                        {
+                            logger.LogError($"Não foi possível converter o ID do administrador: {nameIdentifierClaim.Value}");
+                            return Results.Unauthorized();
+                        }
+
+                        if (adminId == 0)
+                        {
+                            logger.LogError("ID do administrador é 0");
+                            return Results.Unauthorized();
+                        }
+
+                        logger.LogInformation($"Tentando adicionar avaliação. VeiculoId: {veiculoId}, AdminId: {adminId}");
+                        
+                        // Criar novo DTO com o veiculoId da URL
+                        var novaAvaliacaoDTO = new AvaliacaoVeiculoDTO
+                        {
+                            VeiculoId = veiculoId,
+                            Estrelas = avaliacaoDTO.Estrelas,
+                            Comentario = avaliacaoDTO.Comentario
+                        };
+                        var avaliacao = await avaliacaoServico.AdicionarAvaliacao(adminId, novaAvaliacaoDTO);
+                        return Results.Created($"/veiculos/{veiculoId}/avaliacoes/{avaliacao.Id}", avaliacao);
+                    }
+                    catch (KeyNotFoundException ex)
+                    {
+                        logger.LogError(ex, "Recurso não encontrado ao adicionar avaliação");
+                        return Results.NotFound(new { message = ex.Message });
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "Erro ao adicionar avaliação");
+                        return Results.BadRequest(new { message = ex.Message });
+                    }
+                })
+                .RequireAuthorization()
+                .WithTags("Avaliações");
+
+                endpoints.MapGet("/veiculos/{veiculoId}/avaliacoes", async (
+                    [FromRoute] int veiculoId,
+                    [FromServices] IAvaliacaoVeiculoServico avaliacaoServico) =>
+                {
+                    try
+                    {
+                        var avaliacoes = await avaliacaoServico.ObterAvaliacoesDoVeiculo(veiculoId);
+                        return Results.Ok(avaliacoes);
+                    }
+                    catch (Exception ex)
+                    {
+                        return Results.BadRequest(new { message = ex.Message });
+                    }
+                })
+                .WithTags("Avaliações");
+
+                endpoints.MapGet("/veiculos/{veiculoId}/avaliacoes/media", async (
+                    [FromRoute] int veiculoId,
+                    [FromServices] IAvaliacaoVeiculoServico avaliacaoServico) =>
+                {
+                    try
+                    {
+                        var media = await avaliacaoServico.ObterMediaAvaliacoesDoVeiculo(veiculoId);
+                        return Results.Ok(new { media });
+                    }
+                    catch (Exception ex)
+                    {
+                        return Results.BadRequest(new { message = ex.Message });
+                    }
+                })
+                .WithTags("Avaliações");
+
+                endpoints.MapDelete("/avaliacoes/{avaliacaoId}", async (
+                    [FromRoute] int avaliacaoId,
+                    [FromServices] IAvaliacaoVeiculoServico avaliacaoServico,
+                    ClaimsPrincipal user) =>
+                {
+                    try
+                    {
+                        var adminId = int.Parse(user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+                        if (adminId == 0) return Results.Unauthorized();
+
+                        var avaliacao = await avaliacaoServico.ObterAvaliacaoPorId(avaliacaoId);
+                        if (avaliacao == null) return Results.NotFound();
+                        if (avaliacao.AdministradorId != adminId) return Results.Forbid();
+
+                        await avaliacaoServico.DeletarAvaliacao(avaliacaoId);
+                        return Results.NoContent();
+                    }
+                    catch (Exception ex)
+                    {
+                        return Results.BadRequest(new { message = ex.Message });
+                    }
+                })
+                .RequireAuthorization()
+                .WithTags("Avaliações");
 
             #region Home
             endpoints.MapGet("/", () => Results.Json(new Home())).AllowAnonymous().WithTags("Home");
@@ -118,6 +247,7 @@ public class Startup
 
                 var claims = new List<Claim>()
                 {
+                    new Claim(ClaimTypes.NameIdentifier, administrador.Id.ToString()),
                     new Claim("Email", administrador.Email),
                     new Claim("Perfil", administrador.Perfil),
                     new Claim(ClaimTypes.Role, administrador.Perfil),
@@ -229,6 +359,15 @@ public class Startup
                 if(veiculoDTO.Ano < 1950)
                     validacao.Mensagens.Add("Veículo muito antigo, aceito somete anos superiores a 1950");
 
+                if(string.IsNullOrEmpty(veiculoDTO.Placa))
+                    validacao.Mensagens.Add("A placa não pode ser vazia");
+
+                if(string.IsNullOrEmpty(veiculoDTO.Cor))
+                    validacao.Mensagens.Add("A cor não pode ser vazia");
+
+                if(veiculoDTO.Preco <= 0)
+                    validacao.Mensagens.Add("O preço deve ser maior que zero");
+
                 return validacao;
             }
 
@@ -240,7 +379,13 @@ public class Startup
                 var veiculo = new Veiculo{
                     Nome = veiculoDTO.Nome,
                     Marca = veiculoDTO.Marca,
-                    Ano = veiculoDTO.Ano
+                    Ano = veiculoDTO.Ano,
+                    Placa = veiculoDTO.Placa,
+                    Status = veiculoDTO.Status,
+                    Cor = veiculoDTO.Cor,
+                    Quilometragem = veiculoDTO.Quilometragem,
+                    Preco = veiculoDTO.Preco,
+                    Descricao = veiculoDTO.Descricao
                 };
                 veiculoServico.Incluir(veiculo);
 

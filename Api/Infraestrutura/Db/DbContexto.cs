@@ -13,6 +13,8 @@ public class DbContexto : DbContext
 
     public DbSet<Administrador> Administradores { get; set; } = default!;
     public DbSet<Veiculo> Veiculos { get; set; } = default!;
+    public DbSet<AvaliacaoVeiculo> AvaliacoesVeiculos { get; set; } = default!;
+    public DbSet<VeiculoFoto> VeiculoFotos { get; set; } = default!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -24,6 +26,18 @@ public class DbContexto : DbContext
                 Perfil = "Adm"
              }
         );
+
+        modelBuilder.Entity<AvaliacaoVeiculo>()
+            .HasOne(a => a.Veiculo)
+            .WithMany(v => v.Avaliacoes)
+            .HasForeignKey(a => a.VeiculoId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<AvaliacaoVeiculo>()
+            .HasOne(a => a.Administrador)
+            .WithMany()
+            .HasForeignKey(a => a.AdministradorId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
